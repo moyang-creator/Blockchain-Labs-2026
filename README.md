@@ -1,4 +1,3 @@
-# Blockchain-Labs-2026
 # 区块链金融课程 - Arbitrum Orbit L3 实验实验室
 
 **课程名称**：《区块链金融》  
@@ -55,3 +54,193 @@
 
    # 一键初始化 Orbit 链项目
    npx create-orbit-chain@latest
+   ```
+
+   - 项目名称输入：`my-finance-l3`
+   - 选择 **Arbitrum Nitro**
+   - 选择 **Devnet**
+
+3. 启动本地 L3 链：
+
+   ```bash
+   cd my-finance-l3
+   docker compose up -d
+   ```
+
+4. 查看链信息：
+
+   ```bash
+   # 查看 RPC 和 Chain ID
+   docker compose logs sequencer | grep -E "RPC|Chain ID"
+   ```
+
+   常见信息：
+   - **RPC URL**：`http://localhost:8547`
+   - **Chain ID**：通常为 `412346`（或启动时显示的值）
+
+5. 将链添加到 MetaMask：
+   - 网络名称：`Local Orbit L3`
+   - RPC URL：`http://localhost:8547`
+   - Chain ID：`412346`
+   - 货币符号：`ETH`
+
+### 步骤 2：使用 Remix IDE 部署金融合约
+
+1. 打开 [Remix IDE](https://remix.ethereum.org/)
+2. Environment 选择 **Injected Provider - MetaMask**，连接你的本地 L3 链
+3. 新建以下三个文件，复制下方合约代码：
+
+   - `StudentStablecoin.sol`
+   - `SimpleLendingPool.sol`
+   - `RWASimulation.sol`
+
+4. 编译并依次部署合约（推荐顺序：稳定币 → 借贷池 → RWA）
+
+### 步骤 3（可选进阶）：使用 Hardhat 部署
+
+```bash
+npm install
+# 配置 .env 文件后执行
+npx hardhat run scripts/deploy-all.js --network orbitDevnet
+```
+
+---
+
+## 五、三个金融合约代码
+
+### 1. contracts/StudentStablecoin.sol
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/security/Pausable.sol";
+
+contract StudentStablecoin is ERC20, Ownable, Pausable {
+    constructor() ERC20("StudentUSD", "sUSD") Ownable(msg.sender) {
+        _mint(msg.sender, 1_000_000 * 10 ** decimals());
+    }
+
+    function mint(address to, uint256 amount) external onlyOwner whenNotPaused {
+        _mint(to, amount);
+        emit StablecoinMinted(to, amount);
+    }
+
+    function burn(uint256 amount) external whenNotPaused {
+        _burn(msg.sender, amount);
+        emit StablecoinBurned(msg.sender, amount);
+    }
+
+    function pause() external onlyOwner { _pause(); emit ContractPaused(msg.sender); }
+    function unpause() external onlyOwner { _unpause(); emit ContractUnpaused(msg.sender); }
+
+    event StablecoinMinted(address indexed to, uint256 amount);
+    event StablecoinBurned(address indexed from, uint256 amount);
+    event ContractPaused(address indexed by);
+    event ContractUnpaused(address indexed by);
+}
+```
+
+### 2. contracts/SimpleLendingPool.sol
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+
+contract SimpleLendingPool is Ownable {
+    IERC20 public stablecoin;
+    mapping(address => uint256) public deposits;
+    mapping(address => uint256) public lastDepositTime;
+    uint256 public constant INTEREST_RATE = 5; // 年化 5%
+
+    constructor(address _stablecoin) Ownable(msg.sender) {
+        stablecoin = IERC20(_stablecoin);
+    }
+
+    function deposit(uint256 amount) external {
+        require(amount > 0, "Amount must be > 0");
+        stablecoin.transferFrom(msg.sender, address(this), amount);
+        deposits[msg.sender] += amount;
+        lastDepositTime[msg.sender] = block.timestamp;
+        emit Deposited(msg.sender, amount);
+    }
+
+    function withdraw(uint256 amount) external {
+        require(deposits[msg.sender] >= amount, "Insufficient deposit");
+        uint256 interest = calculateInterest(msg.sender);
+        uint256 total = amount + interest;
+        deposits[msg.sender] -= amount;
+        if (deposits[msg.sender] == 0) delete lastDepositTime[msg.sender];
+        stablecoin.transfer(msg.sender, total);
+        emit Withdrawn(msg.sender, amount, interest);
+    }
+
+    function calculateInterest(address user) public view returns (uint256) {
+        if (lastDepositTime[user] == 0) return 0;
+        uint256 timePassed = block.timestamp - lastDepositTime[user];
+        return (deposits[user] * INTEREST_RATE * timePassed) / (365 days * 100);
+    }
+
+    event Deposited(address indexed user, uint256 amount);
+    event Withdrawn(address indexed user, uint256 principal, uint256 interest);
+}
+```
+
+### 3. contracts/RWASimulation.sol
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+
+contract RWASimulation is ERC721, Ownable {
+    uint256 private _nextTokenId;
+    mapping(uint256 => uint256) public assetValue;
+    mapping(uint256 => string) public assetDescription;
+
+    constructor() ERC721("RealWorldAsset", "RWA") Ownable(msg.sender) {}
+
+    function mintRWA(address to, uint256 valueInUSD, string memory description) external onlyOwner {
+        uint256 tokenId = _nextTokenId++;
+        _safeMint(to, tokenId);
+        assetValue[tokenId] = valueInUSD;
+        assetDescription[tokenId] = description;
+        emit RWAMinted(tokenId, to, valueInUSD, description);
+    }
+
+    function transferFrom(address from, address to, uint256 tokenId) public override {
+        super.transferFrom(from, to, tokenId);
+        emit RWATransferred(tokenId, from, to, assetValue[tokenId]);
+    }
+
+    event RWAMinted(uint256 indexed tokenId, address indexed owner, uint256 valueInUSD, string description);
+    event RWATransferred(uint256 indexed tokenId, address from, address to, uint256 valueInUSD);
+}
+```
+
+---
+
+## 六、实验作业要求
+
+1. 你的 L3 链信息（RPC URL、Chain ID）
+2. 三个合约的部署地址
+3. 观察记录（Gas 费用、交易速度、Events 等）
+4. 思考题：
+   - L3 与 L2 在金融场景中的优势与权衡是什么？
+   - Events 在区块链金融监管中起什么作用？
+   - RWA 合约用于真实资产时还需增加哪些功能？
+
+---
+
+**实验提示**：本地部署虽然只能在自己电脑上访问，但能让你真正理解区块链底层技术，是目前最适合高校课堂的免费方案。
+
+祝实验顺利！
+
+---
